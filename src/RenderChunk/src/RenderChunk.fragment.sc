@@ -196,6 +196,53 @@ mat3 getTBNMatrix(const vec3 normal) {
     return mat3(T, B, N);
 }
 
+vec3 getCubemapPosAndLayer(const vec3 pos) {
+    vec3 p = abs(pos);
+    float margin;
+    vec2 uv;
+
+    vec2 result;
+    float layer;
+    if (p.z >= p.x && p.z >= p.y) {
+        margin = 0.5 / p.z;
+        uv = vec2(pos.z < 0.0 ? -pos.x : pos.x, -pos.y);
+        layer = pos.z < 0.0 ? 0.0 : 2.0;
+    } else if (p.y >= p.x) {
+        margin = 0.5 / p.y;
+        uv = vec2(pos.x, pos.y < 0.0 ? -pos.z : pos.z);
+        layer = pos.y < 0.0 ? 5.0 : 4.0;
+    } else {
+        margin = 0.5 / p.x;
+        uv = vec2(pos.x < 0.0 ? pos.z : -pos.z, -pos.y);
+        layer = pos.x < 0.0 ? 3.0 : 1.0;
+    }
+
+    result = uv * margin + 0.5;
+    result = layer == 4.0 ? vec2(result.x, 1.0 - result.y) : vec2(1.0 - result.x, result.y);
+
+    return vec3(result, layer);
+}
+
+vec4 getCubemap(const vec3 pos) {
+    const float imgSize = 1024.0;
+    const vec2  textureAtlasSize = vec2(4096.0, 4096.0);
+    vec2 cubemapLocation[6];
+    cubemapLocation[0] = vec2(0,   316);
+    cubemapLocation[1] = vec2(260, 316);
+    cubemapLocation[2] = vec2(520, 316);
+    cubemapLocation[3] = vec2(0,   576);
+    cubemapLocation[4] = vec2(260, 576);
+    cubemapLocation[5] = vec2(520, 576);
+
+    vec2 uv = getCubemapPosAndLayer(pos).xy;
+    int layer = int(getCubemapPosAndLayer(pos).z);
+
+    vec4 cubemap;
+    cubemap = texture2D(s_MatTexture, uv / textureAtlasSize * imgSize + (1.0 / imgSize * cubemapLocation[layer]));
+    
+    return cubemap;
+}
+
 void main() {
 vec4 albedo = vec4(0.0, 0.0, 0.0, 0.0);
 vec4 texCol = vec4(0.0, 0.0, 0.0, 0.0);
@@ -241,7 +288,7 @@ bool isReflective = false;
 #endif
 
 vec3 worldNormal = normalize(cross(dFdx(fragPos), dFdy(fragPos)));
-vec3 texNormal   = getTexNormal(v_texcoord0, 1024.0, 0.0001);
+vec3 texNormal   = getTexNormal(v_texcoord0, 1024.0, 0.0003);
 vec3 totalNormal = mul(texNormal, getTBNMatrix(worldNormal));
 float time = getTime(v_fog);
 vec3 sunPos = vec3(cos(time), sin(time), 0.0);
@@ -256,7 +303,7 @@ vec3 fogCol = mix(mix(NIGHT_FOG_COL, DAY_FOG_COL, daylight), SET_FOG_COL, set);
 vec3 totalFogCol = mix(skyCol, fogCol, smoothstep(0.8, 1.0, 1.0 - normalize(relPos).y));
 totalFogCol = mix(totalFogCol, grayScale(totalFogCol) * 0.325, rain);
 
-if ((isBlend || isReflective || waterFlag > 0.5) && !bool(underwater)) {
+if ((isBlend || isReflective || waterFlag > 0.5)) {
     float cosTheta = 1.0 - abs(dot(normalize(relPos), totalNormal));
     
     vec3 skyPos = reflect(normalize(relPos), totalNormal);
@@ -295,14 +342,19 @@ if ((isBlend || isReflective || waterFlag > 0.5) && !bool(underwater)) {
     totalSky = mix(totalSky, totalSunCol, sun.z * 1.25);
     totalSky = mix(totalSky, totalMoonCol, moon.y * 1.25);
 
+    vec4 cubemap = getCubemap(skyPos);
+    cubemap.rgb *= texture2D(s_LightMapTexture, vec2(0.0, 1.0)).rgb;
+    
+    totalSky = mix(totalSky, cubemap.rgb, cubemap.a);
+
     float fresnel = waterFlag > 0.5 ? cosTheta : isBlend ? cosTheta * 0.6 : cosTheta * 0.4;
     albedo.rgb = mix(albedo.rgb, totalSky, fresnel * smoothstep(0.6, 0.94, v_lightmapUV.y));
 
     if (isBlend || waterFlag > 0.5) {
         albedo.a = mix(waterFlag > 0.5 ? 0.1 : 0.4, 1.0, cosTheta);
         if (waterFlag > 0.5) {
-            albedo = mix(albedo, vec4(totalSunCol, 1.0), sun.z * 1.25 * smoothstep(0.6, 0.94, v_lightmapUV.y));
-            albedo = mix(albedo, vec4(totalMoonCol, 1.0), moon.x * 1.25 * smoothstep(0.6, 0.94, v_lightmapUV.y));
+            albedo = mix(mix(albedo, vec4(totalSunCol, 1.0), sun.z * 1.25 * smoothstep(0.6, 0.94, v_lightmapUV.y)), albedo, cubemap.a);
+            albedo = mix(mix(albedo, vec4(totalMoonCol, 1.0), moon.x * 1.25 * smoothstep(0.6, 0.94, v_lightmapUV.y)), albedo, cubemap.a);
         }
     }
 }
